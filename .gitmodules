@@ -1,0 +1,3 @@
+[submodule "internal/ocpp-go"]
+	path = internal/ocpp-go
+	url = https://github.com/lorenzodonini/ocpp-go.git
