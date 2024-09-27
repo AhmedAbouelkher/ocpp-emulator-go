@@ -14,6 +14,7 @@ const (
 const (
 	NoSecurityProfile = iota
 	BasicSecurityProfile
+	BasicSecurityWithTLSProfile
 )
 
 var (

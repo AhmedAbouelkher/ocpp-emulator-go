@@ -36,6 +36,9 @@ func startHttpServer() string {
 						item := it.Item()
 						k := item.Key()
 						v, _ := item.ValueCopy(nil)
+						if len(v) > 100 {
+							v = v[:100]
+						}
 						t.AppendRows([]table.Row{
 							{string(k), string(v), item.ExpiresAt()},
 						})

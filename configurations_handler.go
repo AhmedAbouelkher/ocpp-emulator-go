@@ -27,16 +27,32 @@ func (handler *ChargePointHandler) OnChangeConfiguration(request *core.ChangeCon
 			if v < val {
 				return errors.New("cannot set a lower security profile")
 			}
-			if v == BasicSecurityProfile {
+
+			switch v {
+			case BasicSecurityProfile, BasicSecurityWithTLSProfile:
 				password, err := GetKeyValueTX(txn, "AuthorizationKey")
 				if err != nil {
 					return err
 				}
 				if password == "" {
-					return errors.New("not all security profile keys are set")
+					return errors.New("this profile requires a password")
 				}
 
-				requiresReboot = true
+				if v == BasicSecurityWithTLSProfile {
+					rootCert, err := GetKeyValueTX(txn, "root_certificate")
+					if err != nil {
+						return err
+					}
+					if rootCert == "" {
+						return errors.New("this profile requires a root certificate")
+					}
+					requiresReboot = false
+				} else {
+					requiresReboot = true
+				}
+
+			default:
+				return errors.New("unknown security profile")
 			}
 			return nil
 		}); err != nil {
