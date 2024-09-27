@@ -23,9 +23,8 @@ const (
 )
 
 var (
-	csUrl       string
-	controlPort string
-	showVersion bool
+	csUrl, controlPort, dbPath string
+	showVersion                bool
 
 	db          *badger.DB
 	chargePoint ocpp16.ChargePoint
@@ -51,6 +50,7 @@ func main() {
 	flag.StringVar(&chargePointId, "cp", "", "charge point id")
 	flag.StringVar(&csUrl, "cs", "", "central system url")
 	flag.StringVar(&controlPort, "control-port", "", "control server port (default: random)")
+	flag.StringVar(&dbPath, "db", "db", "db path")
 	flag.BoolVar(&showVersion, "version", false, "show version")
 
 	flag.Parse()
@@ -72,7 +72,7 @@ func main() {
 
 	appLogger = appLogger.WithField("cp", chargePointId)
 
-	dbPath := filepath.Join("db", chargePointId)
+	dbPath := filepath.Join(dbPath, chargePointId)
 	badgerDB, err := badger.Open(badger.DefaultOptions(dbPath))
 	if err != nil {
 		log.Fatal(err)
@@ -90,6 +90,7 @@ func main() {
 		SetIfNotExistsTX(txn, "SecurityProfile", fmt.Sprintf("%d", NoSecurityProfile))
 		SetIfNotExistsTX(txn, "MeterValueSampleInterval", "300")
 		SetIfNotExistsTX(txn, "MeterValuesSampledData", "Energy.Active.Import.Register")
+		SetIfNotExistsTX(txn, "CertificateStoreMaxLength", "1")
 		SetIfNotExistsTX(txn, "default_heartbeat_interval", "300")
 		return nil
 	}); err != nil {
