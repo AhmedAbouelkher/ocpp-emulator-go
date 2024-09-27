@@ -1,274 +1,120 @@
 package main
 
 import (
-	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
-	"flag"
+	"log"
 	"math/big"
+	"net"
 	"os"
 	"time"
 )
 
-var (
-	isCA, isCRT, isSignCSR bool
-	csrFile                string
-
-	certSubject = pkix.Name{
-		SerialNumber: "04a970ec72639e056482",
-		// CommonName:    "localhost",
-		Organization:  []string{"Company, INC."},
-		Country:       []string{"EG"},
-		Province:      []string{"Cairo"},
-		Locality:      []string{"Cairo"},
-		StreetAddress: []string{"Nasr City"},
-		PostalCode:    []string{"11765"},
-	}
+const (
+	year = 365 * 24 * time.Hour
 )
 
 func main() {
-
-	flag.BoolVar(&isCA, "ca", false, "generate a CA")
-	flag.BoolVar(&isCRT, "crt", false, "generate a certificate")
-	flag.BoolVar(&isSignCSR, "csr", false, "sign a CSR")
-	flag.StringVar(&csrFile, "csrf", "", "CSR file to sign")
-	flag.Parse()
-
-	t := time.Now()
-
-	if isCA {
-		ca, key, err := genCA()
-		if err != nil {
-			panic(err)
-		}
-		// write the CA to disk
-		writeToFile("ca.pem", ca)
-		// write the key to disk
-		writeToFile("ca.key", key)
-	} else if isCRT {
-		// load the CA
-		caCert, err := os.ReadFile("ca.pem")
-		if err != nil {
-			panic(err)
-		}
-		caPrivKey, err := os.ReadFile("ca.key")
-		if err != nil {
-			panic(err)
-		}
-		// generate the client certificate
-		cert, key, err := genClientCrt(bytes.NewBuffer(caCert), bytes.NewBuffer(caPrivKey))
-		if err != nil {
-			panic(err)
-		}
-		writeToFile("client_cert.pem", cert)
-		writeToFile("client_cert.key", key)
-	} else if isSignCSR {
-		if csrFile == "" {
-			flag.Usage()
-			println("CSR file not specified")
-			os.Exit(2)
-		}
-		caCert, err := os.ReadFile("ca.pem")
-		if err != nil {
-			panic(err)
-		}
-		caPrivKey, err := os.ReadFile("ca.key")
-		if err != nil {
-			panic(err)
-		}
-		clientCSR, err := os.ReadFile(csrFile)
-		if err != nil {
-			panic(err)
-		}
-		clientCRT, err := signCSR(caCert, caPrivKey, clientCSR)
-		if err != nil {
-			panic(err)
-		}
-		writeToFile("signed_client_cert.pem", clientCRT)
-	} else {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	elapsed := time.Since(t)
-	println("elapsed time:", elapsed.String())
-}
-
-func genCA() (*bytes.Buffer, *bytes.Buffer, error) {
-	// set up our CA certificate
-	sn, err := rand.Int(rand.Reader, big.NewInt(1000000000000000000))
+	// Generate a private key for the CA
+	caPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, err
+		log.Fatalf("Failed to generate CA private key: %v", err)
 	}
-	ca := &x509.Certificate{
-		SerialNumber:          sn,
-		Subject:               certSubject,
+
+	// Create a template for the CA certificate
+	caTemplate := &x509.Certificate{
+		SerialNumber: randomSerialNumber(),
+		Subject: pkix.Name{
+			Organization: []string{"Ahmed, INC."},
+			Country:      []string{"EG"},
+			Province:     []string{"Alexandria"},
+		},
 		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(10, 0, 0),
+		NotAfter:              time.Now().Add(10 * year), // Valid for 10 years
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 		IsCA:                  true,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 	}
 
-	// create our private and public key
-	caPrivKey, err := rsa.GenerateKey(rand.Reader, 4096)
+	// Self-sign the CA certificate
+	caCertDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caPriv.PublicKey, caPriv)
 	if err != nil {
-		return nil, nil, err
+		log.Fatalf("Failed to create CA certificate: %v", err)
 	}
 
-	// create the CA
-	caBytes, err := x509.CreateCertificate(rand.Reader, ca, ca, &caPrivKey.PublicKey, caPrivKey)
+	// Save the CA private key and certificate to files
+	saveToPEM("ca_cert.pem", "CERTIFICATE", caCertDER)
+	savePrivateKey("ca_key.pem", caPriv)
+	println("DO NOT SHARE THE CA PRIVATE KEY WITH ANYONE!")
+
+	// Generate a private key for the server certificate
+	serverPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, err
+		log.Fatalf("Failed to generate server private key: %v", err)
 	}
 
-	// pem encode
-	caPEM := new(bytes.Buffer)
-	pem.Encode(caPEM, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: caBytes,
-	})
+	// Create a template for the server certificate
+	serverTemplate := &x509.Certificate{
+		SerialNumber: randomSerialNumber(),
+		Subject: pkix.Name{
+			Organization: []string{"My OCPP Server"},
+		},
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(2 * year), // Valid for 2 year
+		KeyUsage:    x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:    []string{"ocpp-server.com"}, // Important: SAN contains 'ocpp-server.com'
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+	}
 
-	caPrivKeyPEM := new(bytes.Buffer)
-	pem.Encode(caPrivKeyPEM, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(caPrivKey),
-	})
+	// Sign the server certificate with the CA
+	serverCertDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverPriv.PublicKey, caPriv)
+	if err != nil {
+		log.Fatalf("Failed to create server certificate: %v", err)
+	}
 
-	return caPEM, caPrivKeyPEM, nil
+	// Save the server private key and certificate to files
+	saveToPEM("server_cert.pem", "CERTIFICATE", serverCertDER)
+	savePrivateKey("server_key.pem", serverPriv)
 }
 
-func genClientCrt(rawCA *bytes.Buffer, caKey *bytes.Buffer) (*bytes.Buffer, *bytes.Buffer, error) {
-	// set up our server certificate
-	sn, err := rand.Int(rand.Reader, big.NewInt(1000000000000000000))
+// saveToPEM saves the certificate to a PEM file
+func saveToPEM(filename, fileType string, derBytes []byte) {
+	certOut, err := os.Create(filename)
 	if err != nil {
-		return nil, nil, err
+		log.Fatalf("Failed to open %s for writing: %v", filename, err)
 	}
-	cert := &x509.Certificate{
-		SerialNumber: sn,
-		Subject:      certSubject,
-		DNSNames:     []string{certSubject.CommonName},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(10, 0, 0),
-		SubjectKeyId: []byte{1, 2, 3, 4, 6},
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+	if err := pem.Encode(certOut, &pem.Block{Type: fileType, Bytes: derBytes}); err != nil {
+		log.Fatalf("Failed to write data to %s: %v", filename, err)
 	}
-
-	certPrivKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// parse PEM encoded CA
-	pemBlock, _ := pem.Decode(rawCA.Bytes())
-	if pemBlock == nil {
-		return nil, nil, err
-	}
-	caCert, err := x509.ParseCertificate(pemBlock.Bytes)
-	if err != nil {
-		panic(err)
-	}
-
-	// parse PEM encoded CA private key
-	pemBlock, _ = pem.Decode(caKey.Bytes())
-	if pemBlock == nil {
-		return nil, nil, err
-	}
-	caPrivKey, err := x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
-	if err != nil {
-		panic(err)
-	}
-
-	certBytes, err := x509.CreateCertificate(rand.Reader, cert, caCert, &certPrivKey.PublicKey, caPrivKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	certPEM := new(bytes.Buffer)
-	pem.Encode(certPEM, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: certBytes,
-	})
-
-	certPrivKeyPEM := new(bytes.Buffer)
-	pem.Encode(certPrivKeyPEM, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(certPrivKey),
-	})
-
-	return certPEM, certPrivKeyPEM, nil
+	certOut.Close()
+	log.Printf("Wrote %s\n", filename)
 }
 
-func signCSR(rawCA []byte, caKey []byte, rawCSR []byte) (*bytes.Buffer, error) {
-	// parse PEM encoded CA
-	pemBlock, _ := pem.Decode(rawCA)
-	if pemBlock == nil {
-		return nil, errors.New("failed to parse CA")
-	}
-	caCert, err := x509.ParseCertificate(pemBlock.Bytes)
+// savePrivateKey saves the private key to a PEM file
+func savePrivateKey(filename string, key *ecdsa.PrivateKey) {
+	keyOut, err := os.Create(filename)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to open %s for writing: %v", filename, err)
 	}
-	// parse PEM encoded CA private key
-	pemBlock, _ = pem.Decode(caKey)
-	if pemBlock == nil {
-		return nil, errors.New("failed to parse CA private key")
-	}
-	caPrivKey, err := x509.ParsePKCS1PrivateKey(pemBlock.Bytes)
+	privBytes, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to marshal private key: %v", err)
 	}
-	// parse PEM encoded CSR
-	pemBlock, _ = pem.Decode(rawCSR)
-	if pemBlock == nil {
-		return nil, errors.New("failed to parse CSR")
-	}
-	clientCSR, err := x509.ParseCertificateRequest(pemBlock.Bytes)
-	if err != nil {
-		panic(err)
-	}
-	clientCRTTemplate := x509.Certificate{
-		Signature:          clientCSR.Signature,
-		SignatureAlgorithm: clientCSR.SignatureAlgorithm,
-
-		PublicKeyAlgorithm: clientCSR.PublicKeyAlgorithm,
-		PublicKey:          clientCSR.PublicKey,
-		Subject:            clientCSR.Subject,
-
-		SerialNumber: big.NewInt(2),
-		Issuer:       caCert.Subject,
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	clientCRTBytes, err := x509.CreateCertificate(rand.Reader, &clientCRTTemplate, caCert, clientCSR.PublicKey, caPrivKey)
-	if err != nil {
-		panic(err)
-	}
-	clientPEM := new(bytes.Buffer)
-	pem.Encode(clientPEM, &pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: clientCRTBytes,
-	})
-	return clientPEM, nil
+	pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+	keyOut.Close()
+	log.Printf("Wrote %s\n", filename)
 }
 
-func writeToFile(filename string, data *bytes.Buffer) error {
-	f, err := os.Create(filename)
+func randomSerialNumber() *big.Int {
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		return err
+		log.Fatalf("Failed to generate serial number: %v", err)
 	}
-	defer f.Close()
-	_, err = f.Write(data.Bytes())
-	if err != nil {
-		return err
-	}
-	return nil
+	return serialNumber
 }
