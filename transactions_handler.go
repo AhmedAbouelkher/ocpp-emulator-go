@@ -13,8 +13,8 @@ import (
 func (handler *ChargePointHandler) OnRemoteStartTransaction(request *core.RemoteStartTransactionRequest) (confirmation *core.RemoteStartTransactionConfirmation, err error) {
 	connectorId := request.ConnectorId
 	if connectorId == nil {
-		return core.NewRemoteStartTransactionConfirmation(
-			types.RemoteStartStopStatusRejected), err
+		val := 1
+		connectorId = &val
 	}
 
 	if isTxRunning() {

@@ -85,8 +85,10 @@ func main() {
 
 	// store setup configuration
 	if err := db.Update(func(txn *badger.Txn) error {
-		// txn.Set([]byte("SecurityProfile"), []byte(fmt.Sprintf("%d", BasicSecurityProfile)))
+		// txn.Set([]byte("SecurityProfile"), []byte(fmt.Sprintf("%d", NoSecurityProfile)))
+		// txn.Delete([]byte("AuthorizationKey"))
 		// txn.Delete([]byte("root_certificate"))
+		// txn.Delete([]byte("current_transaction_id"))
 
 		txn.Set([]byte("started_at"), []byte(time.Now().Format(time.RFC3339)))
 		txn.Set([]byte("charge_point_id"), []byte(chargePointId))

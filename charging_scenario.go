@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
 	"strings"
 	"time"
@@ -19,7 +18,10 @@ func (h *ChargePointHandler) RunRemoteScenario() error {
 	statusNotification(core.ChargePointStatusCharging, 0)
 
 	for {
-		meterValueIntervalInSeconds := MustGetIntKey("MeterValueIntervalKey")
+		meterValueIntervalInSeconds := MustGetIntKey("MeterValueSampleInterval")
+		if meterValueIntervalInSeconds == 0 {
+			meterValueIntervalInSeconds = 60
+		}
 		time.Sleep(time.Duration(meterValueIntervalInSeconds) * time.Second)
 
 		db.Update(func(txn *badger.Txn) error {
@@ -30,11 +32,11 @@ func (h *ChargePointHandler) RunRemoteScenario() error {
 			IncrementKeyTX(txn, InstantaneousPowerKey, p)
 			IncrementKeyTX(txn, InstantaneousVoltageKey, v)
 			IncrementKeyTX(txn, InstantaneousCurrentKey, c)
-			ic, _ := GetIntKeyTX(txn, InstantaneousCurrentOfferedKey)
-			IncrementKeyTX(txn, InstantaneousCurrentOfferedKey, int(int(math.Max(
-				float64(ic),
-				float64(c),
-			))))
+			// ic, _ := GetIntKeyTX(txn, InstantaneousCurrentOfferedKey)
+			// IncrementKeyTX(txn, InstantaneousCurrentOfferedKey, int(int(math.Max(
+			// 	float64(ic),
+			// 	float64(c),
+			// ))))
 			return nil
 		})
 
@@ -42,6 +44,9 @@ func (h *ChargePointHandler) RunRemoteScenario() error {
 			break
 		}
 		logFields := genMeterValues()
+		logFields["connector_id"] = currentTxConnectorId()
+		logFields["transaction_id"] = currentTxId()
+		logFields["interval"] = meterValueIntervalInSeconds
 
 		if err := sendMeterValues(); err != nil {
 			appLogger.WithError(err).
@@ -61,7 +66,7 @@ func genMeterValues() logrus.Fields {
 		fields["instantaneous_power"] = MustGetIntKeyTX(txn, InstantaneousPowerKey)
 		fields["instantaneous_voltage"] = MustGetIntKeyTX(txn, InstantaneousVoltageKey)
 		fields["instantaneous_current"] = MustGetIntKeyTX(txn, InstantaneousCurrentKey)
-		fields["instantaneous_current_offered"] = MustGetIntKeyTX(txn, InstantaneousCurrentOfferedKey)
+		// fields["instantaneous_current_offered"] = MustGetIntKeyTX(txn, InstantaneousCurrentOfferedKey)
 		fields["instantaneous_temperature"] = MustGetIntKeyTX(txn, InstantaneousTemperatureKey)
 		fields["battery_percentage"] = MustGetIntKeyTX(txn, BatteryPercentageKey)
 		return nil
@@ -164,12 +169,12 @@ func sendMeterValues() error {
 					value.Measurand = types.MeasurandCurrentImport
 				})
 
-			case types.MeasurandCurrentOffered:
-				randomTrigger(func() {
-					value.Value = fmt.Sprintf("%d", MustGetIntKeyTX(txn, InstantaneousCurrentOfferedKey))
-					value.Unit = types.UnitOfMeasureA
-					value.Measurand = types.MeasurandCurrentOffered
-				})
+			// case types.MeasurandCurrentOffered:
+			// 	randomTrigger(func() {
+			// 		value.Value = fmt.Sprintf("%d", MustGetIntKeyTX(txn, InstantaneousCurrentOfferedKey))
+			// 		value.Unit = types.UnitOfMeasureA
+			// 		value.Measurand = types.MeasurandCurrentOffered
+			// 	})
 
 			case types.MeasurandVoltage:
 				randomTrigger(func() {
@@ -204,6 +209,10 @@ func sendMeterValues() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if len(sampledValues) == 0 {
+		return nil
 	}
 
 	cid := currentTxConnectorId()
